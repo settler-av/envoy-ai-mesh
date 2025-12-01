@@ -1,0 +1,98 @@
+load_module /usr/lib/nginx/modules/ngx_http_js_module.so;
+
+# Production paths - standard Linux locations
+# These paths are standard for production deployments and typically don't need customization
+pid /var/run/nginx.pid;
+error_log /var/log/nginx/error.log warn;
+
+events {}
+
+http {
+    access_log /var/log/nginx/access.log;
+
+    # Map URI prefixes to upstream servers
+    map $uri $upstream_backend {
+        ~^/mcp          http://127.0.0.1:8081;
+        ~^/api          http://127.0.0.1:8082;
+        ~^/service      http://127.0.0.1:8083;
+        default         http://127.0.0.1:8081;
+    }
+
+    # NJS path - plugins are in /etc/nginx/njs/
+    # Standard production path - customize if your deployment differs
+    js_path "/etc/nginx/njs/";
+    
+    # Import the main filter script
+    js_import filter from "filter.js";
+    
+    # Variable to pass the sanitized body to the upstream
+    js_var $mcp_payload;
+    js_var $mcp_payload_length;
+
+    server {
+        listen 8080;
+
+        # Buffer request body for NJS processing
+        client_body_buffer_size 1m;
+        client_max_body_size 1m;
+        client_body_in_single_buffer on;
+
+        location / {
+            js_content filter.handleRequest;
+        }
+
+        # Internal location to serve plugin config file for njs subrequest
+        # Try JSON first (preferred format for njs parsing)
+        # Standard production path - customize if your deployment differs
+        location = /_internal/plugin-config {
+            internal;
+            alias /etc/nginx/plugins/config.json;
+            default_type application/json;
+        }
+        
+        # Fallback location for YAML config (used when JSON returns 404)
+        location = /_internal/plugin-config-yaml {
+            internal;
+            alias /etc/nginx/plugins/config.yaml;
+            default_type text/plain;
+        }
+
+        # Internal location for proxying - routes based on path
+        location ~ ^/upstream(/.*)$ {
+            internal;
+            
+            # Enable request buffering so we can modify the body
+            proxy_request_buffering on;
+            
+            # Don't pass the original request body - we'll set it from variable
+            proxy_pass_request_body off;
+            
+            proxy_pass $upstream_backend$1;
+            
+            # Set the body from the NJS variable (modified/redacted body)
+            proxy_set_body $mcp_payload;
+            
+            # Pass headers
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Content-Type $http_content_type;
+            
+            # Use the calculated Content-Length from NJS (matches actual body size)
+            # This is critical when body is modified (e.g., PII redaction)
+            proxy_set_header Content-Length $mcp_payload_length;
+            
+            # Pass Accept header for MCP server compatibility
+            proxy_set_header Accept $http_accept;
+            
+            # Streaming & SSE optimizations for response
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_buffering off;
+            proxy_cache off;
+            # Don't use chunked encoding for request when we set Content-Length explicitly
+        }
+    }
+}
+
