@@ -1,0 +1,253 @@
+# Kyverno ClusterPolicy for AI Mesh Sidecar Injection
+#
+# This policy automatically injects an Envoy sidecar proxy into pods
+# annotated with `ai-mesh: "enabled"`. The injection includes:
+#
+# 1. An init-container that configures iptables to redirect traffic
+# 2. An Envoy sidecar container with the Wasm guardrail filter
+#
+# Prerequisites:
+# - Kyverno v1.10+ installed in the cluster
+# - ConfigMap 'envoy-config' with envoy.yaml in target namespace
+# - ConfigMap 'guardrail-wasm' with compiled guardrail.wasm in target namespace
+#
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-mesh-sidecar-injection
+  annotations:
+    policies.kyverno.io/title: AI Mesh Sidecar Injection
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Injects Envoy sidecar proxy with AI guardrail Wasm filter into pods
+      annotated with ai-mesh: "enabled". Provides transparent interception
+      of AI agent traffic for prompt injection detection.
+spec:
+  # Apply to matching pods during admission
+  rules:
+    # Rule 1: Inject iptables init-container for traffic redirection
+    - name: inject-proxy-init
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-mesh: "enabled"
+      # Don't apply to pods that already have the init container
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.initContainers[?name=='proxy-init'] || `[]` | length(@) }}"
+            operator: Equals
+            value: 0
+      mutate:
+        patchStrategicMerge:
+          spec:
+            initContainers:
+              - name: proxy-init
+                image: alpine:latest
+                imagePullPolicy: IfNotPresent
+                # Security context with NET_ADMIN for iptables
+                securityContext:
+                  capabilities:
+                    add:
+                      - NET_ADMIN
+                    drop:
+                      - ALL
+                  runAsUser: 0
+                  runAsNonRoot: false
+                  readOnlyRootFilesystem: false
+                # Install iptables and configure traffic redirection
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    set -ex
+                    
+                    echo "=== AI Mesh: Configuring iptables for transparent interception ==="
+                    
+                    # Install iptables
+                    apk add --no-cache iptables
+                    
+                    # Define ports
+                    ENVOY_PORT=15000
+                    APP_PORT=8080
+                    ENVOY_UID=1337
+                    
+                    # Create a new chain for inbound traffic redirection
+                    iptables -t nat -N AI_MESH_INBOUND 2>/dev/null || true
+                    
+                    # Redirect all inbound TCP traffic destined for app port to Envoy
+                    # This captures traffic coming into the pod on port 8080
+                    iptables -t nat -A AI_MESH_INBOUND -p tcp --dport ${APP_PORT} -j REDIRECT --to-port ${ENVOY_PORT}
+                    
+                    # Apply the inbound chain to PREROUTING (for external traffic)
+                    iptables -t nat -A PREROUTING -p tcp -j AI_MESH_INBOUND
+                    
+                    # Also handle locally-originated traffic (from within the pod) to app port
+                    # But exclude traffic from Envoy itself to prevent loops
+                    iptables -t nat -N AI_MESH_OUTPUT 2>/dev/null || true
+                    
+                    # Don't redirect Envoy's own traffic (identified by UID)
+                    iptables -t nat -A AI_MESH_OUTPUT -m owner --uid-owner ${ENVOY_UID} -j RETURN
+                    
+                    # Don't redirect traffic to localhost (127.0.0.1) from the app itself
+                    # This allows the app to make outbound connections
+                    iptables -t nat -A AI_MESH_OUTPUT -d 127.0.0.1/32 -j RETURN
+                    
+                    # Redirect locally-originated traffic to app port through Envoy
+                    # This handles cases where something in the pod tries to connect to the app
+                    iptables -t nat -A AI_MESH_OUTPUT -p tcp --dport ${APP_PORT} ! -d 127.0.0.1/32 -j REDIRECT --to-port ${ENVOY_PORT}
+                    
+                    # Apply output chain
+                    iptables -t nat -A OUTPUT -p tcp -j AI_MESH_OUTPUT
+                    
+                    # Display final rules for debugging
+                    echo "=== Final iptables NAT rules ==="
+                    iptables -t nat -L -v -n
+                    
+                    echo "=== AI Mesh: iptables configuration complete ==="
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 64Mi
+
+    # Rule 2: Inject Envoy sidecar container
+    - name: inject-envoy-sidecar
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-mesh: "enabled"
+      # Don't apply to pods that already have the sidecar
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.containers[?name=='envoy-sidecar'] || `[]` | length(@) }}"
+            operator: Equals
+            value: 0
+      mutate:
+        patchStrategicMerge:
+          spec:
+            # Add volumes for Envoy config and Wasm filter
+            volumes:
+              - name: envoy-config
+                configMap:
+                  name: envoy-config
+              - name: guardrail-wasm
+                configMap:
+                  name: guardrail-wasm
+            # Add Envoy sidecar container
+            containers:
+              - name: envoy-sidecar
+                image: envoyproxy/envoy:v1.29-latest
+                imagePullPolicy: IfNotPresent
+                # Run as specific user to allow UID-based iptables rules
+                securityContext:
+                  runAsUser: 1337
+                  runAsGroup: 1337
+                  runAsNonRoot: true
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                # Envoy command with config file
+                args:
+                  - -c
+                  - /etc/envoy/envoy.yaml
+                  - --log-level
+                  - info
+                  - --component-log-level
+                  - wasm:debug,filter:debug
+                # Expose ports
+                ports:
+                  - name: proxy
+                    containerPort: 15000
+                    protocol: TCP
+                  - name: admin
+                    containerPort: 15001
+                    protocol: TCP
+                # Volume mounts for config and wasm
+                volumeMounts:
+                  - name: envoy-config
+                    mountPath: /etc/envoy/envoy.yaml
+                    subPath: envoy.yaml
+                    readOnly: true
+                  - name: guardrail-wasm
+                    mountPath: /etc/envoy/guardrail.wasm
+                    subPath: guardrail.wasm
+                    readOnly: true
+                # Resource limits
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                # Health checks
+                readinessProbe:
+                  httpGet:
+                    path: /ready
+                    port: 15001
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+                livenessProbe:
+                  httpGet:
+                    path: /ready
+                    port: 15001
+                  initialDelaySeconds: 10
+                  periodSeconds: 15
+                  timeoutSeconds: 3
+                # Environment variables
+                env:
+                  - name: POD_NAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.name
+                  - name: POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: POD_IP
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+  # Validation settings
+  validationFailureAction: Audit
+  background: false
+  # Webhook configuration
+  webhookTimeoutSeconds: 30
+---
+# PolicyException for system namespaces (don't inject into kube-system, etc.)
+apiVersion: kyverno.io/v2beta1
+kind: PolicyException
+metadata:
+  name: ai-mesh-system-exception
+  namespace: kyverno
+spec:
+  exceptions:
+    - policyName: ai-mesh-sidecar-injection
+      ruleNames:
+        - inject-proxy-init
+        - inject-envoy-sidecar
+  match:
+    any:
+      - resources:
+          namespaces:
+            - kube-system
+            - kube-public
+            - kube-node-lease
+            - kyverno
+            - cert-manager
+            - ingress-nginx
+          kinds:
+            - Pod

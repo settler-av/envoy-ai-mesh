@@ -1,0 +1,56 @@
+# KIND Cluster Configuration for AI Mesh Development
+#
+# This configuration creates a single-node KIND cluster with:
+# - Extra port mappings for NodePort services (30080 for testing)
+# - Docker volume mounts for loading local images
+# - Appropriate resource allocations for Envoy + Wasm
+#
+# Usage:
+#   kind create cluster --config kind-cluster.yaml --name ai-mesh
+#
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ai-mesh
+nodes:
+  - role: control-plane
+    # Port mappings for accessing services from host
+    extraPortMappings:
+      # NodePort for mock-ai-agent service
+      - containerPort: 30080
+        hostPort: 30080
+        protocol: TCP
+      # NodePort for additional services if needed
+      - containerPort: 30081
+        hostPort: 30081
+        protocol: TCP
+      # NodePort range for testing
+      - containerPort: 30082
+        hostPort: 30082
+        protocol: TCP
+    # Kubernetes API server patches
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            # Enable admission controllers needed for Kyverno
+            enable-admission-plugins: "NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook"
+    # Extra mounts for development
+    extraMounts:
+      # Mount for local wasm files (optional, for faster iteration)
+      - hostPath: /tmp/ai-mesh-wasm
+        containerPath: /wasm
+        readOnly: true
+# Networking configuration
+networking:
+  # Use default CNI (kindnet)
+  disableDefaultCNI: false
+  # Pod subnet
+  podSubnet: "10.244.0.0/16"
+  # Service subnet
+  serviceSubnet: "10.96.0.0/12"

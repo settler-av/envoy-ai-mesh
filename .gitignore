@@ -1,1 +1,39 @@
+# Rust target directory
+wasm-filter/target/
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Kubernetes secrets (never commit)
+*-secret.yaml
+*.secret
+secrets/
+
+# Local development
 .env
+.env.local
+*.local
+
+# Build artifacts
+*.wasm
+!guardrail.wasm
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Kind cluster kubeconfig
+kubeconfig

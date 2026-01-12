@@ -1,0 +1,355 @@
+# Mock AI Agent Deployment
+#
+# This deployment runs a simple Python HTTP server that echoes JSON requests.
+# It is annotated with `ai-mesh: "enabled"` to trigger Kyverno sidecar injection.
+#
+# The Envoy sidecar will be automatically injected to intercept all traffic
+# and inspect request bodies for prompt injection attacks.
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-agents
+  labels:
+    app.kubernetes.io/name: ai-agents
+    ai-mesh.io/enabled: "true"
+---
+# ConfigMap containing the mock agent Python script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-agent-script
+  namespace: ai-agents
+  labels:
+    app: mock-ai-agent
+data:
+  mock_agent.py: |
+    #!/usr/bin/env python3
+    """Mock AI Agent - Simple HTTP Echo Server"""
+    
+    import json
+    import logging
+    import os
+    import sys
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from datetime import datetime
+    from typing import Dict, Any
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        stream=sys.stdout
+    )
+    logger = logging.getLogger('mock-ai-agent')
+    
+    PORT = int(os.getenv('PORT', '8080'))
+    HOST = os.getenv('HOST', '0.0.0.0')
+    
+    class MockAIAgentHandler(BaseHTTPRequestHandler):
+        def _set_headers(self, status_code: int = 200, content_type: str = 'application/json'):
+            self.send_response(status_code)
+            self.send_header('Content-Type', content_type)
+            self.send_header('X-Agent-Version', '1.0.0')
+            self.send_header('X-Processed-By', 'mock-ai-agent')
+            self.end_headers()
+        
+        def _send_json_response(self, data: Dict[str, Any], status_code: int = 200):
+            self._set_headers(status_code)
+            response = json.dumps(data, indent=2)
+            self.wfile.write(response.encode('utf-8'))
+        
+        def _read_request_body(self) -> bytes:
+            content_length = int(self.headers.get('Content-Length', 0))
+            return self.rfile.read(content_length)
+        
+        def log_message(self, format: str, *args):
+            logger.info(f"{self.address_string()} - {format % args}")
+        
+        def do_GET(self):
+            logger.info(f"GET {self.path}")
+            if self.path == '/health' or self.path == '/healthz':
+                self._send_json_response({
+                    'status': 'healthy',
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'service': 'mock-ai-agent'
+                })
+            elif self.path == '/ready':
+                self._send_json_response({
+                    'ready': True,
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+            elif self.path == '/':
+                self._send_json_response({
+                    'service': 'Mock AI Agent',
+                    'version': '1.0.0',
+                    'endpoints': {
+                        'POST /': 'Echo JSON request',
+                        'POST /chat': 'Simulated AI chat response',
+                        'GET /health': 'Health check'
+                    }
+                })
+            else:
+                self._send_json_response({'error': 'Not Found', 'path': self.path}, 404)
+        
+        def do_POST(self):
+            logger.info(f"POST {self.path}")
+            try:
+                body = self._read_request_body()
+                body_preview = body[:500].decode('utf-8', errors='replace')
+                logger.info(f"Received body: {body_preview}")
+                
+                guardrail_inspected = self.headers.get('X-Guardrail-Inspected', 'false')
+                
+                try:
+                    request_data = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    request_data = {'raw_body': body.decode('utf-8', errors='replace')}
+                
+                if self.path == '/chat':
+                    user_message = request_data.get('message', request_data.get('prompt', ''))
+                    self._send_json_response({
+                        'response': f"This is a simulated AI response to: {user_message}",
+                        'model': 'mock-gpt-4',
+                        'usage': {
+                            'prompt_tokens': len(user_message.split()),
+                            'completion_tokens': 15,
+                            'total_tokens': len(user_message.split()) + 15
+                        },
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'guardrail_inspected': guardrail_inspected
+                    })
+                else:
+                    self._send_json_response({
+                        'echo': request_data,
+                        'received_at': datetime.utcnow().isoformat(),
+                        'content_length': len(body),
+                        'guardrail_inspected': guardrail_inspected,
+                        'headers': dict(self.headers)
+                    })
+            except Exception as e:
+                logger.exception(f"Error: {e}")
+                self._send_json_response({'error': 'Internal Server Error', 'message': str(e)}, 500)
+    
+    def run_server():
+        server_address = (HOST, PORT)
+        httpd = HTTPServer(server_address, MockAIAgentHandler)
+        logger.info(f"Mock AI Agent starting on {HOST}:{PORT}")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            httpd.shutdown()
+    
+    if __name__ == '__main__':
+        run_server()
+---
+# ConfigMap for Envoy configuration (referenced by Kyverno injection)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-config
+  namespace: ai-agents
+  labels:
+    app: ai-mesh
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: 15001
+      access_log:
+        - name: envoy.access_loggers.stdout
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+    static_resources:
+      listeners:
+        - name: inbound_listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 15000
+          transparent: true
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: inbound_http
+                    codec_type: AUTO
+                    stream_idle_timeout: 300s
+                    request_timeout: 300s
+                    upgrade_configs:
+                      - upgrade_type: websocket
+                        enabled: true
+                      - upgrade_type: text/event-stream
+                        enabled: true
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                        - name: local_service
+                          domains: ["*"]
+                          routes:
+                            - match:
+                                prefix: "/"
+                              route:
+                                cluster: local_app
+                                timeout: 300s
+                    http_filters:
+                      - name: envoy.filters.http.wasm
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+                          config:
+                            name: "ai_guardrail"
+                            root_id: "ai_guardrail_root"
+                            vm_config:
+                              vm_id: "ai_guardrail_vm"
+                              runtime: "envoy.wasm.runtime.v8"
+                              code:
+                                local:
+                                  filename: "/etc/envoy/guardrail.wasm"
+                              allow_precompiled: true
+                              nack_on_code_cache_miss: true
+                            configuration:
+                              "@type": type.googleapis.com/google.protobuf.StringValue
+                              value: |
+                                {
+                                  "blocked_patterns": [
+                                    "ignore previous instructions",
+                                    "ignore all previous",
+                                    "disregard previous",
+                                    "forget your instructions",
+                                    "jailbreak",
+                                    "DAN mode"
+                                  ],
+                                  "max_body_size": 10485760,
+                                  "log_matches": true
+                                }
+                            fail_open: false
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+      clusters:
+        - name: local_app
+          type: STATIC
+          connect_timeout: 5s
+          load_assignment:
+            cluster_name: local_app
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 8080
+---
+# Deployment for Mock AI Agent
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-ai-agent
+  namespace: ai-agents
+  labels:
+    app: mock-ai-agent
+    app.kubernetes.io/name: mock-ai-agent
+    app.kubernetes.io/component: ai-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-ai-agent
+  template:
+    metadata:
+      labels:
+        app: mock-ai-agent
+        app.kubernetes.io/name: mock-ai-agent
+      # THIS ANNOTATION TRIGGERS KYVERNO SIDECAR INJECTION
+      annotations:
+        ai-mesh: "enabled"
+    spec:
+      containers:
+        - name: agent
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /app/mock_agent.py
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HOST
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: agent-script
+              mountPath: /app
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: agent-script
+          configMap:
+            name: mock-agent-script
+            defaultMode: 0755
+---
+# Service to expose the Mock AI Agent
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-ai-agent
+  namespace: ai-agents
+  labels:
+    app: mock-ai-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: mock-ai-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+# NodePort Service for testing from host (KIND)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-ai-agent-nodeport
+  namespace: ai-agents
+  labels:
+    app: mock-ai-agent
+spec:
+  type: NodePort
+  selector:
+    app: mock-ai-agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+      protocol: TCP
