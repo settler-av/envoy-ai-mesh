@@ -1,27 +1,46 @@
 [package]
-name = "ai-guardrail-filter"
-version = "0.1.0"
+name = "ai-guard-filter"
+version = "0.2.0"
 edition = "2021"
 authors = ["AI Mesh Team"]
-description = "Envoy Wasm filter for AI prompt injection detection"
+description = "Envoy Wasm filter for headless AI governance - MCP and A2A protocol security"
 license = "Apache-2.0"
+repository = "https://github.com/msicie/plugins_ai-guardrails"
+keywords = ["envoy", "wasm", "ai", "governance", "mcp", "a2a"]
 
 [lib]
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
+# Envoy proxy-wasm SDK
 proxy-wasm = "0.2.2"
+
+# Logging
 log = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+
+# Serialization (no regex, no std features that grow memory)
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+# Testing only
+tokio = { version = "1.0", features = ["macros", "rt"] }
 
 [profile.release]
+# Optimize for size - critical for Wasm
 opt-level = "s"
 lto = true
 strip = true
 panic = "abort"
+# Reduce code size
+codegen-units = 1
+
+[profile.dev]
+# Faster dev builds
+opt-level = 0
+debug = true
 
 # Required for wasm32-wasi target
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-Os"]
+wasm-opt = ["-Os", "--enable-simd"]

@@ -1,0 +1,86 @@
+# Default Governance Policy ConfigMap for AI-Guard
+#
+# This ConfigMap contains the default governance policy that is mounted
+# into the ai-guard-sidecar container. It defines rules for:
+# - A2AS BASIC security controls
+# - MCP transport restrictions
+# - A2A protocol requirements
+# - PII redaction settings
+# - Rate limiting
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-guard-default-policy
+  labels:
+    app.kubernetes.io/name: ai-guard
+    app.kubernetes.io/component: policy
+data:
+  policy.json: |
+    {
+      "version": "1.0.0",
+      "name": "default",
+      "description": "Default AI-Guard governance policy",
+      
+      "a2as": {
+        "behavior_enforcement": "warn",
+        "prompt_authentication": "optional",
+        "boundary_tags": true,
+        "in_context_defenses": true
+      },
+      
+      "protocols": {
+        "mcp": {
+          "enabled": true,
+          "require_network_transport": true,
+          "blocked_transports": ["stdio"],
+          "allowed_methods": ["*"],
+          "validate_jsonrpc": true
+        },
+        "a2a": {
+          "enabled": true,
+          "require_tls": false,
+          "allowed_bindings": ["jsonrpc", "grpc", "http+json"],
+          "validate_messages": true
+        }
+      },
+      
+      "governance": {
+        "prompt_injection": {
+          "enabled": true,
+          "action": "block",
+          "patterns": [
+            "ignore previous instructions",
+            "ignore all previous",
+            "disregard previous",
+            "forget your instructions",
+            "override your instructions",
+            "ignore your system prompt",
+            "bypass your restrictions",
+            "jailbreak",
+            "DAN mode"
+          ]
+        },
+        "pii_redaction": {
+          "enabled": true,
+          "action": "log",
+          "types": ["ssn", "credit_card", "email", "phone"]
+        },
+        "rate_limiting": {
+          "enabled": false,
+          "requests_per_minute": 100,
+          "tokens_per_minute": 10000
+        },
+        "token_counting": {
+          "enabled": true,
+          "emit_metrics": true
+        }
+      },
+      
+      "telemetry": {
+        "log_level": "info",
+        "log_matches": true,
+        "emit_traces": false,
+        "emit_metrics": true
+      }
+    }

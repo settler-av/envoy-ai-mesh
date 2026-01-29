@@ -1,0 +1,117 @@
+# Enterprise Strict AI-Guard Governance Policy
+#
+# Maximum security policy for enterprise environments.
+# Requires TLS, authentication, and strict behavior enforcement.
+#
+apiVersion: ai-guard.io/v1
+kind: GovernancePolicy
+metadata:
+  name: enterprise-strict
+  labels:
+    ai-guard.io/tier: enterprise
+spec:
+  # A2AS BASIC Security Controls - All Enforced
+  a2as:
+    behavior_enforcement: strict
+    prompt_authentication: required
+    boundary_tags: enabled
+    in_context_defenses: enabled
+  
+  # Protocol Configuration - Strict
+  protocols:
+    mcp:
+      enabled: true
+      require_network_transport: true
+      blocked_transports:
+        - stdio
+      allowed_methods:
+        - tools/list
+        - tools/call
+        - resources/list
+        - resources/read
+        - prompts/list
+        - prompts/get
+        - ping
+        - initialize
+        - shutdown
+      validate_jsonrpc: true
+    
+    a2a:
+      enabled: true
+      require_tls: true
+      min_tls_version: "1.2"
+      require_authentication: true
+      allowed_bindings:
+        - jsonrpc
+        - grpc
+      validate_messages: true
+  
+  # Governance Rules - Strict
+  governance:
+    prompt_injection:
+      enabled: true
+      action: block
+      log_all_attempts: true
+      patterns:
+        - ignore previous instructions
+        - ignore all previous
+        - disregard previous
+        - disregard all previous
+        - forget your instructions
+        - forget all instructions
+        - override your instructions
+        - ignore your system prompt
+        - ignore the system prompt
+        - bypass your restrictions
+        - bypass the restrictions
+        - jailbreak
+        - DAN mode
+        - developer mode
+        - do anything now
+        - pretend you are
+        - act as if you
+        - roleplay as
+        - you are now
+        - reveal your system prompt
+        - show your system prompt
+        - what is your system prompt
+        - display your instructions
+        - delete database
+        - drop table
+        - rm -rf
+        - format disk
+        - end of context
+        - new context
+        - reset context
+    
+    pii_redaction:
+      enabled: true
+      action: redact
+      log_detections: true
+      types:
+        - ssn
+        - credit_card
+        - email
+        - phone
+        - address
+        - name
+    
+    rate_limiting:
+      enabled: true
+      requests_per_minute: 60
+      tokens_per_minute: 50000
+      burst_limit: 10
+    
+    token_counting:
+      enabled: true
+      emit_metrics: true
+      alert_threshold: 10000
+  
+  # Telemetry Configuration - Full
+  telemetry:
+    log_level: debug
+    log_matches: true
+    log_all_requests: true
+    emit_traces: true
+    emit_metrics: true
+    audit_log: true

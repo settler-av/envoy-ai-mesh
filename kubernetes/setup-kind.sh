@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# AI Mesh - KIND Cluster Setup Script
+# AI-Guard - KIND Cluster Setup Script
 # =============================================================================
-# This script sets up a KIND cluster with Kyverno for the AI Mesh project.
+# This script sets up a KIND cluster with Kyverno for the AI-Guard project.
 #
 # Prerequisites:
 # - Docker installed and running
@@ -24,7 +24,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-CLUSTER_NAME="${CLUSTER_NAME:-ai-mesh}"
+CLUSTER_NAME="${CLUSTER_NAME:-ai-guard}"
 KYVERNO_VERSION="${KYVERNO_VERSION:-3.1.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -146,13 +146,17 @@ install_kyverno() {
 }
 
 # Apply AI Mesh policies and resources
-apply_ai_mesh() {
-    log_info "Applying AI Mesh Kyverno policy..."
-    
-    # Apply the sidecar injection policy
-    kubectl apply -f "${SCRIPT_DIR}/kyverno/sidecar-injection-policy.yaml"
-    
-    log_success "AI Mesh policy applied"
+apply_ai_guard() {
+    log_info "Applying AI-Guard Kyverno policies..."
+
+    # Apply the AI-Guard injection policy (annotation-based)
+    kubectl apply -f "${SCRIPT_DIR}/kyverno/ai-guard-injection-policy.yaml"
+
+    # Apply network-only enforcement and STDIO blocking (optional but recommended)
+    kubectl apply -f "${SCRIPT_DIR}/kyverno/network-policy.yaml" || true
+    kubectl apply -f "${SCRIPT_DIR}/kyverno/stdio-block-policy.yaml" || true
+
+    log_success "AI-Guard policies applied"
 }
 
 # Create namespace and ConfigMaps
@@ -167,14 +171,14 @@ setup_namespace() {
 
 # Load Wasm ConfigMap (requires built wasm file)
 load_wasm_configmap() {
-    local wasm_file="${PROJECT_ROOT}/wasm-filter/target/wasm32-wasi/release/ai_guardrail_filter.wasm"
+    local wasm_file="${PROJECT_ROOT}/wasm-filter/target/wasm32-wasip1/release/ai_guard_filter.wasm"
     
     if [ -f "${wasm_file}" ]; then
-        log_info "Loading Wasm filter as ConfigMap..."
+        log_info "Loading AI-Guard Wasm filter as ConfigMap..."
         
         # Create ConfigMap from the wasm binary
-        kubectl create configmap guardrail-wasm \
-            --from-file=guardrail.wasm="${wasm_file}" \
+        kubectl create configmap ai-guard-wasm-filter \
+            --from-file=ai-guard.wasm="${wasm_file}" \
             --namespace ai-agents \
             --dry-run=client -o yaml | kubectl apply -f -
         
@@ -186,7 +190,7 @@ load_wasm_configmap() {
         
         # Create a placeholder ConfigMap (will need to be updated after build)
         log_info "Creating placeholder ConfigMap..."
-        kubectl create configmap guardrail-wasm \
+        kubectl create configmap ai-guard-wasm-filter \
             --from-literal=placeholder="Build wasm and reload" \
             --namespace ai-agents \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -197,7 +201,7 @@ load_wasm_configmap() {
 print_info() {
     echo ""
     echo "=============================================="
-    echo "AI Mesh KIND Cluster Setup Complete!"
+    echo "AI-Guard KIND Cluster Setup Complete!"
     echo "=============================================="
     echo ""
     echo "Cluster Name: ${CLUSTER_NAME}"
@@ -206,9 +210,9 @@ print_info() {
     echo "Useful commands:"
     echo "  kubectl get pods -n ai-agents           # Check agent pods"
     echo "  kubectl get pods -n kyverno             # Check Kyverno pods"
-    echo "  kubectl logs -n ai-agents -l app=mock-ai-agent -c envoy-sidecar  # Envoy logs"
+    echo "  kubectl logs -n ai-agents -l app=mock-ai-agent -c ai-guard-sidecar  # Envoy logs"
     echo ""
-    echo "Test the AI Mesh:"
+    echo "Test AI-Guard:"
     echo "  # Safe request (should pass):"
     echo '  curl -X POST http://localhost:30080/ -H "Content-Type: application/json" -d '\''{"message": "Hello AI"}'\'''
     echo ""
@@ -226,14 +230,14 @@ print_info() {
 main() {
     echo ""
     echo "=============================================="
-    echo "AI Mesh - KIND Cluster Setup"
+    echo "AI-Guard - KIND Cluster Setup"
     echo "=============================================="
     echo ""
     
     check_prerequisites
     create_cluster
     install_kyverno
-    apply_ai_mesh
+    apply_ai_guard
     setup_namespace
     load_wasm_configmap
     print_info

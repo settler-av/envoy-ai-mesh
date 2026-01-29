@@ -1,0 +1,80 @@
+# Default Behavior Certificate ConfigMap for AI-Guard
+#
+# This ConfigMap contains a permissive default behavior certificate.
+# In production, each agent should have a specific certificate that
+# declares its capabilities and permissions.
+#
+# A2AS BASIC Control: (B) Behavior Certificates
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-guard-default-cert
+  labels:
+    app.kubernetes.io/name: ai-guard
+    app.kubernetes.io/component: certificate
+data:
+  certificate.json: |
+    {
+      "version": "1.0.0",
+      "agent_id": "default-agent",
+      "description": "Default permissive behavior certificate",
+      "issued_at": "2024-01-01T00:00:00Z",
+      "expires_at": "2099-12-31T23:59:59Z",
+      
+      "permissions": {
+        "tools": [
+          {
+            "name": "*",
+            "access": "read",
+            "description": "Allow read access to all tools by default"
+          }
+        ],
+        "resources": [
+          {
+            "type": "file",
+            "path": "/tmp/*",
+            "access": "read"
+          },
+          {
+            "type": "network",
+            "hosts": ["*"],
+            "ports": [80, 443, 8080],
+            "access": "connect"
+          }
+        ],
+        "agents": [
+          {
+            "pattern": "*",
+            "access": "communicate",
+            "description": "Allow communication with any agent"
+          }
+        ],
+        "protocols": {
+          "mcp": {
+            "transports": ["http", "sse", "websocket"],
+            "block_stdio": true,
+            "methods": ["*"]
+          },
+          "a2a": {
+            "bindings": ["jsonrpc", "grpc", "http+json"],
+            "require_auth": false
+          }
+        }
+      },
+      
+      "restrictions": {
+        "dangerous_operations": {
+          "blocked_patterns": [
+            "delete database",
+            "drop table",
+            "rm -rf",
+            "format disk"
+          ]
+        },
+        "max_request_size": 10485760,
+        "max_response_size": 10485760
+      },
+      
+      "signature": null
+    }

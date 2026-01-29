@@ -1,0 +1,81 @@
+# Default AI-Guard Governance Policy
+#
+# This policy provides balanced security for general AI agent workloads.
+#
+apiVersion: ai-guard.io/v1
+kind: GovernancePolicy
+metadata:
+  name: default
+  labels:
+    ai-guard.io/tier: default
+spec:
+  # A2AS BASIC Security Controls
+  a2as:
+    behavior_enforcement: warn
+    prompt_authentication: optional
+    boundary_tags: enabled
+    in_context_defenses: enabled
+  
+  # Protocol Configuration
+  protocols:
+    mcp:
+      enabled: true
+      require_network_transport: true
+      blocked_transports:
+        - stdio
+      allowed_methods:
+        - "*"
+      validate_jsonrpc: true
+    
+    a2a:
+      enabled: true
+      require_tls: false
+      allowed_bindings:
+        - jsonrpc
+        - grpc
+        - http+json
+      validate_messages: true
+  
+  # Governance Rules
+  governance:
+    prompt_injection:
+      enabled: true
+      action: block
+      patterns:
+        - ignore previous instructions
+        - ignore all previous
+        - disregard previous
+        - forget your instructions
+        - override your instructions
+        - ignore your system prompt
+        - bypass your restrictions
+        - jailbreak
+        - DAN mode
+        - delete database
+        - drop table
+        - rm -rf
+    
+    pii_redaction:
+      enabled: true
+      action: log
+      types:
+        - ssn
+        - credit_card
+        - email
+        - phone
+    
+    rate_limiting:
+      enabled: false
+      requests_per_minute: 100
+      tokens_per_minute: 100000
+    
+    token_counting:
+      enabled: true
+      emit_metrics: true
+  
+  # Telemetry Configuration
+  telemetry:
+    log_level: info
+    log_matches: true
+    emit_traces: false
+    emit_metrics: true

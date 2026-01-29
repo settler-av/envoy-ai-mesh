@@ -1,0 +1,199 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ai-guard.io/schemas/behavior-certificate.json",
+  "title": "AI-Guard Behavior Certificate",
+  "description": "Schema for A2AS Behavior Certificates that declare agent capabilities and permissions",
+  "type": "object",
+  "required": ["version", "agent_id", "permissions"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the certificate"
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier for the agent"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the agent"
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Certificate issuance timestamp"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Certificate expiration timestamp"
+    },
+    "issuer": {
+      "type": "string",
+      "description": "Entity that issued the certificate"
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "access"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Tool name or pattern (supports wildcards)"
+              },
+              "access": {
+                "type": "string",
+                "enum": ["read", "write", "execute", "admin"],
+                "description": "Access level"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "MCP tool access permissions"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "access"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["file", "network", "database", "api"],
+                "description": "Resource type"
+              },
+              "path": {
+                "type": "string",
+                "description": "Resource path pattern"
+              },
+              "hosts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Allowed hosts (for network)"
+              },
+              "ports": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Allowed ports (for network)"
+              },
+              "access": {
+                "type": "string",
+                "enum": ["read", "write", "connect", "full"],
+                "description": "Access level"
+              }
+            }
+          },
+          "description": "Resource access permissions"
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["pattern", "access"],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "Agent ID pattern (supports wildcards)"
+              },
+              "access": {
+                "type": "string",
+                "enum": ["communicate", "delegate", "none"],
+                "description": "Communication permission"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "A2A communication permissions"
+        },
+        "protocols": {
+          "type": "object",
+          "properties": {
+            "mcp": {
+              "type": "object",
+              "properties": {
+                "transports": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["http", "sse", "websocket"]
+                  }
+                },
+                "block_stdio": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "methods": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                }
+              }
+            },
+            "a2a": {
+              "type": "object",
+              "properties": {
+                "bindings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["jsonrpc", "grpc", "http+json"]
+                  }
+                },
+                "require_auth": {
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            }
+          },
+          "description": "Protocol-specific permissions"
+        }
+      },
+      "description": "Agent permissions"
+    },
+    "restrictions": {
+      "type": "object",
+      "properties": {
+        "dangerous_operations": {
+          "type": "object",
+          "properties": {
+            "blocked_patterns": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Patterns to block"
+            }
+          }
+        },
+        "max_request_size": {
+          "type": "integer",
+          "description": "Maximum request size in bytes"
+        },
+        "max_response_size": {
+          "type": "integer",
+          "description": "Maximum response size in bytes"
+        },
+        "rate_limits": {
+          "type": "object",
+          "properties": {
+            "requests_per_minute": {"type": "integer"},
+            "tokens_per_minute": {"type": "integer"}
+          }
+        }
+      },
+      "description": "Agent restrictions"
+    },
+    "signature": {
+      "type": ["string", "null"],
+      "description": "JWS signature for certificate verification"
+    }
+  }
+}

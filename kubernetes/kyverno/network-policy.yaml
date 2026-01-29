@@ -1,0 +1,111 @@
+# NetworkPolicy for Network-Only MCP Enforcement
+#
+# This NetworkPolicy restricts egress traffic from AI agent pods to only
+# mesh-visible network protocols. STDIO transport bypasses the mesh
+# entirely, so we enforce network-only communication.
+#
+# Applied to pods with ai-mesh: "enabled" label
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-guard-network-only
+  labels:
+    app.kubernetes.io/name: ai-guard
+    app.kubernetes.io/component: network-policy
+spec:
+  # Apply to pods with ai-mesh label
+  podSelector:
+    matchLabels:
+      ai-mesh: "enabled"
+  
+  # Enforce egress rules
+  policyTypes:
+    - Egress
+    - Ingress
+  
+  # Ingress rules - allow all TCP to app port
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    - from:
+        - podSelector: {}  # Allow from same namespace
+  
+  # Egress rules - only allow mesh-visible ports
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    
+    # Allow HTTP/HTTPS (mesh-visible)
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443
+    
+    # Allow gRPC (mesh-visible)
+    - ports:
+        - protocol: TCP
+          port: 50051
+    
+    # Allow Envoy admin port (internal)
+    - ports:
+        - protocol: TCP
+          port: 15000
+        - protocol: TCP
+          port: 15001
+    
+    # Allow OpenTelemetry collector
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317  # OTLP gRPC
+        - protocol: TCP
+          port: 4318  # OTLP HTTP
+---
+# Kyverno policy to automatically add ai-mesh label to injected pods
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-guard-add-mesh-label
+  annotations:
+    policies.kyverno.io/title: Add AI Mesh Label
+    policies.kyverno.io/description: >-
+      Adds ai-mesh: "enabled" label to pods with ai-guard.io/inject annotation.
+      This enables NetworkPolicy enforcement for mesh visibility.
+spec:
+  rules:
+    - name: add-mesh-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-guard.io/inject: "true"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              ai-mesh: "enabled"

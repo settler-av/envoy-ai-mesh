@@ -1,0 +1,109 @@
+# Docker Compose for AI-Guard Local Testing
+#
+# This setup allows testing AI-Guard without Kubernetes.
+# Demonstrates the Headless AI Gateway pattern with:
+# - Envoy proxy with Wasm filter
+# - Mock AI agent
+# - OpenTelemetry collector (optional)
+#
+# Usage:
+#   make deploy-compose    # Start services
+#   make test              # Run tests
+#   make clean-compose     # Stop services
+#
+
+services:
+  # Mock AI Agent - simulates an LLM-based application
+  mock-agent:
+    build:
+      context: ../mock-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - LOG_LEVEL=debug
+    healthcheck:
+      # Use 127.0.0.1 (not 'localhost') to avoid IPv6 ::1 resolution hangs.
+      test: ["CMD", "curl", "-fsS", "--max-time", "2", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - ai-guard-network
+
+  # Envoy Proxy with AI-Guard Wasm Filter
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    depends_on:
+      mock-agent:
+        condition: service_healthy
+    ports:
+      - "15000:15000"  # Proxy port
+      - "15001:15001"  # Admin port
+    volumes:
+      - ./configs/ai-guard-envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./wasm/ai-guard.wasm:/etc/envoy/ai-guard.wasm:ro
+    command:
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+      - --component-log-level
+      - wasm:debug
+    # NOTE: envoy image doesn't ship with curl/wget. We avoid container healthchecks
+    # here and instead wait from the host (PowerShell runner) before testing.
+    networks:
+      - ai-guard-network
+
+  # Interceptor - transparent proxy that routes through Envoy
+  interceptor:
+    image: envoyproxy/envoy:v1.31-latest
+    depends_on:
+      envoy:
+        condition: service_started
+    ports:
+      - "9000:9000"  # External access point
+    volumes:
+      - ./configs/interceptor.yaml:/etc/envoy/envoy.yaml:ro
+    command:
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+    networks:
+      - ai-guard-network
+
+  # OpenTelemetry Collector (optional)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics
+    volumes:
+      - ./configs/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    command:
+      - --config=/etc/otelcol/config.yaml
+    profiles:
+      - observability
+    networks:
+      - ai-guard-network
+
+  # Jaeger for trace visualization (optional)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    profiles:
+      - observability
+    networks:
+      - ai-guard-network
+
+networks:
+  ai-guard-network:
+    driver: bridge

@@ -1,0 +1,60 @@
+# OpenTelemetry Collector Configuration
+#
+# Receives telemetry from AI-Guard Envoy filter and exports
+# to various backends.
+#
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1000
+
+  # Add AI-Guard metadata
+  attributes:
+    actions:
+      - key: service.name
+        value: ai-guard
+        action: upsert
+      - key: deployment.environment
+        value: local
+        action: upsert
+
+exporters:
+  # Debug logging
+  debug:
+    verbosity: detailed
+
+  # Jaeger (when running with observability profile)
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prometheus metrics
+  prometheus:
+    endpoint: "0.0.0.0:8888"
+    namespace: ai_guard
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, attributes]
+      exporters: [debug, otlp/jaeger]
+    
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, prometheus]
+    
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

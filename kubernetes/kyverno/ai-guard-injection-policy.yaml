@@ -1,0 +1,268 @@
+# Kyverno ClusterPolicy for Headless AI Gateway Injection
+#
+# This policy automatically injects the AI-Guard sidecar (Envoy + Wasm filter)
+# into pods annotated with `ai-guard.io/inject: "true"`.
+#
+# Implements the A2AS BASIC security model for MCP and A2A protocol governance.
+#
+# Usage:
+#   metadata:
+#     annotations:
+#       ai-guard.io/inject: "true"
+#       ai-guard.io/policy: "default"        # Optional: policy profile
+#       ai-guard.io/certificate: "agent-v1"  # Optional: behavior certificate
+#
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-guard-inject
+  annotations:
+    policies.kyverno.io/title: Headless AI Gateway Injection
+    policies.kyverno.io/category: AI Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod,Deployment
+    policies.kyverno.io/minversion: 1.10.0
+    policies.kyverno.io/description: >-
+      Injects the Headless AI Gateway sidecar (Envoy + Wasm filter) into Pods
+      annotated with ai-guard.io/inject: "true". Implements the A2AS BASIC
+      security model for MCP and A2A protocol governance. This enables
+      zero-hop governance without hairpinning to a central gateway.
+spec:
+  # Apply to matching pods during admission
+  rules:
+    # Rule 1: Inject Init Container for iptables configuration
+    - name: inject-init-container
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-guard.io/inject: "true"
+      # Don't apply to pods that already have the init container
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.initContainers[?name=='ai-guard-init'] || `[]` | length(@) }}"
+            operator: Equals
+            value: 0
+      mutate:
+        patchStrategicMerge:
+          spec:
+            initContainers:
+              - name: ai-guard-init
+                image: alpine:latest
+                imagePullPolicy: IfNotPresent
+                # Security context with NET_ADMIN for iptables
+                securityContext:
+                  capabilities:
+                    add:
+                      - NET_ADMIN
+                    drop:
+                      - ALL
+                  runAsUser: 0
+                  runAsNonRoot: false
+                  readOnlyRootFilesystem: false
+                # Install iptables and configure traffic redirection
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    set -ex
+                    
+                    echo "=== AI-Guard: Configuring iptables for transparent interception ==="
+                    
+                    # Install iptables
+                    apk add --no-cache iptables
+                    
+                    # Define ports
+                    ENVOY_PORT=15000
+                    APP_PORT=8080
+                    ENVOY_UID=1337
+                    
+                    # Create a new chain for inbound traffic redirection
+                    iptables -t nat -N AI_GUARD_INBOUND 2>/dev/null || true
+                    
+                    # Redirect all inbound TCP traffic destined for app port to Envoy
+                    iptables -t nat -A AI_GUARD_INBOUND -p tcp --dport ${APP_PORT} -j REDIRECT --to-port ${ENVOY_PORT}
+                    
+                    # Apply the inbound chain to PREROUTING (for external traffic)
+                    iptables -t nat -A PREROUTING -p tcp -j AI_GUARD_INBOUND
+                    
+                    # Handle locally-originated traffic (from within the pod) to app port
+                    # But exclude traffic from Envoy itself to prevent loops
+                    iptables -t nat -N AI_GUARD_OUTPUT 2>/dev/null || true
+                    
+                    # Don't redirect Envoy's own traffic (identified by UID)
+                    iptables -t nat -A AI_GUARD_OUTPUT -m owner --uid-owner ${ENVOY_UID} -j RETURN
+                    
+                    # Don't redirect traffic to localhost (127.0.0.1) from the app itself
+                    iptables -t nat -A AI_GUARD_OUTPUT -d 127.0.0.1/32 -j RETURN
+                    
+                    # Redirect locally-originated traffic to app port through Envoy
+                    iptables -t nat -A AI_GUARD_OUTPUT -p tcp --dport ${APP_PORT} ! -d 127.0.0.1/32 -j REDIRECT --to-port ${ENVOY_PORT}
+                    
+                    # Apply output chain
+                    iptables -t nat -A OUTPUT -p tcp -j AI_GUARD_OUTPUT
+                    
+                    # Display final rules for debugging
+                    echo "=== Final iptables NAT rules ==="
+                    iptables -t nat -L -v -n
+                    
+                    echo "=== AI-Guard: iptables configuration complete ==="
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 64Mi
+
+    # Rule 2: Inject Headless AI Gateway Sidecar
+    - name: inject-ai-guard-sidecar
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-guard.io/inject: "true"
+      # Don't apply to pods that already have the sidecar
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.containers[?name=='ai-guard-sidecar'] || `[]` | length(@) }}"
+            operator: Equals
+            value: 0
+      mutate:
+        patchStrategicMerge:
+          spec:
+            # Add volumes for Envoy config, Wasm filter, policy, and certificate
+            volumes:
+              - name: ai-guard-config
+                configMap:
+                  name: ai-guard-envoy-config
+              - name: ai-guard-wasm
+                configMap:
+                  name: ai-guard-wasm-filter
+              - name: ai-guard-policy
+                configMap:
+                  name: ai-guard-default-policy
+              - name: ai-guard-certificate
+                configMap:
+                  name: ai-guard-default-cert
+                  optional: true
+            # Add Envoy sidecar container
+            containers:
+              - name: ai-guard-sidecar
+                image: envoyproxy/envoy:v1.31-latest
+                imagePullPolicy: IfNotPresent
+                # Run as specific user to allow UID-based iptables rules
+                securityContext:
+                  runAsUser: 1337
+                  runAsGroup: 1337
+                  runAsNonRoot: true
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                # Envoy command with config file
+                args:
+                  - -c
+                  - /etc/envoy/envoy.yaml
+                  - --log-level
+                  - info
+                  - --component-log-level
+                  - wasm:debug,filter:debug
+                # Expose ports
+                ports:
+                  - name: proxy
+                    containerPort: 15000
+                    protocol: TCP
+                  - name: admin
+                    containerPort: 15001
+                    protocol: TCP
+                # Volume mounts for config, wasm, policy, and certificate
+                volumeMounts:
+                  - name: ai-guard-config
+                    mountPath: /etc/envoy/envoy.yaml
+                    subPath: envoy.yaml
+                    readOnly: true
+                  - name: ai-guard-wasm
+                    mountPath: /etc/envoy/ai-guard.wasm
+                    subPath: ai-guard.wasm
+                    readOnly: true
+                  - name: ai-guard-policy
+                    mountPath: /etc/ai-guard/policy.json
+                    subPath: policy.json
+                    readOnly: true
+                  - name: ai-guard-certificate
+                    mountPath: /etc/ai-guard/certificate.json
+                    subPath: certificate.json
+                    readOnly: true
+                # Resource limits
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                # Health checks
+                readinessProbe:
+                  httpGet:
+                    path: /ready
+                    port: 15001
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+                livenessProbe:
+                  httpGet:
+                    path: /ready
+                    port: 15001
+                  initialDelaySeconds: 10
+                  periodSeconds: 15
+                  timeoutSeconds: 3
+                # Environment variables
+                env:
+                  - name: POD_NAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.name
+                  - name: POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                  - name: POD_IP
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+  # Validation settings
+  validationFailureAction: Audit
+  background: false
+  # Webhook configuration
+  webhookTimeoutSeconds: 30
+---
+# PolicyException for system namespaces (don't inject into kube-system, etc.)
+apiVersion: kyverno.io/v2beta1
+kind: PolicyException
+metadata:
+  name: ai-guard-system-exception
+  namespace: kyverno
+spec:
+  exceptions:
+    - policyName: ai-guard-inject
+      ruleNames:
+        - inject-init-container
+        - inject-ai-guard-sidecar
+  match:
+    any:
+      - resources:
+          namespaces:
+            - kube-system
+            - kube-public
+            - kube-node-lease
+            - kyverno
+            - cert-manager
+            - ingress-nginx
+          kinds:
+            - Pod

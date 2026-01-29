@@ -1,0 +1,124 @@
+# Kyverno Policy to Block STDIO MCP Transport
+#
+# STDIO transport bypasses the mesh - there's no network traffic to intercept.
+# This policy blocks common STDIO MCP server commands in container definitions.
+#
+# Blocked patterns:
+# - npx @modelcontextprotocol/* (Node.js MCP servers)
+# - uvx (Python package runner)
+# - stdio transport configurations
+#
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-guard-block-stdio
+  annotations:
+    policies.kyverno.io/title: Block STDIO MCP Transport
+    policies.kyverno.io/category: AI Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks STDIO-based MCP transport in AI agent pods. STDIO bypasses
+      the mesh entirely, preventing governance and audit. Use HTTP, SSE,
+      or WebSocket transports for mesh visibility.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    # Block STDIO MCP server commands in container args
+    - name: block-stdio-commands
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-guard.io/inject: "true"
+      validate:
+        message: >-
+          STDIO-based MCP transport is blocked for mesh visibility.
+          Container {{request.object.spec.containers[].name}} contains
+          STDIO command pattern. Use HTTP, SSE, or WebSocket transport instead.
+        foreach:
+          - list: "request.object.spec.containers[]"
+            deny:
+              conditions:
+                any:
+                  # Block npx @modelcontextprotocol commands
+                  - key: "{{ element.command || `[]` | join(' ', @) }}"
+                    operator: AnyIn
+                    value:
+                      - "*npx*@modelcontextprotocol*"
+                      - "*npx*mcp-server*"
+                  # Block uvx commands
+                  - key: "{{ element.command || `[]` | join(' ', @) }}"
+                    operator: AnyIn
+                    value:
+                      - "*uvx*"
+                  # Block stdio in args
+                  - key: "{{ element.args || `[]` | join(' ', @) }}"
+                    operator: AnyIn
+                    value:
+                      - "*--transport*stdio*"
+                      - "*transport=stdio*"
+                      - "*STDIO*"
+
+    # Block STDIO in environment variables
+    - name: block-stdio-env
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              annotations:
+                ai-guard.io/inject: "true"
+      validate:
+        message: >-
+          STDIO transport configuration in environment variables is blocked.
+          Use network-based MCP transport (HTTP, SSE, WebSocket).
+        foreach:
+          - list: "request.object.spec.containers[]"
+            foreach:
+              - list: "element.env || `[]`"
+                deny:
+                  conditions:
+                    any:
+                      - key: "{{ element.name }}"
+                        operator: Equals
+                        value: "MCP_TRANSPORT"
+                      - key: "{{ element.value || '' }}"
+                        operator: AnyIn
+                        value:
+                          - "stdio"
+                          - "STDIO"
+---
+# Audit policy for STDIO detection (non-blocking, for monitoring)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-guard-stdio-audit
+  annotations:
+    policies.kyverno.io/title: Audit STDIO MCP Usage
+    policies.kyverno.io/category: AI Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Audits potential STDIO MCP usage attempts. Does not block, only logs.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: audit-mcp-server-tools
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Pod may be using MCP server tools that could use STDIO transport.
+          Ensure network-based transport is configured.
+        pattern:
+          spec:
+            containers:
+              - name: "*"
+                image: "!*mcp-server*"
