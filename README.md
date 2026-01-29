@@ -50,7 +50,7 @@ To deploy **only** to Docker Desktop Kubernetes (never your current kube context
 ```
 
 ## Architecture
-![Architecture diagram](./assets/image.pngimage.png)
+![Architecture diagram](./assets/image.png)
 
 ## Protocol Support
 
