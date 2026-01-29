@@ -50,47 +50,7 @@ To deploy **only** to Docker Desktop Kubernetes (never your current kube context
 ```
 
 ## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Control Plane                             │
-├─────────────────────────────────────────────────────────────────┤
-│  Kyverno Controller → ClusterPolicy: ai-guard-inject            │
-│  ConfigMaps: policies, certificates, envoy config               │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                    Injects on annotation:
-                    ai-guard.io/inject: "true"
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Data Plane (Per Pod)                        │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌──────────────────────────────────────┐   │
-│  │ Init        │    │  AI-Guard Sidecar (Envoy + Wasm)     │   │
-│  │ Container   │    │  ┌────────────────────────────────┐  │   │
-│  │ (iptables)  │    │  │  A2AS BASIC Security Controls  │  │   │
-│  └─────────────┘    │  │  - Behavior Certificates       │  │   │
-│                      │  │  - Authenticated Prompts       │  │   │
-│  ┌─────────────┐    │  │  - Security Boundaries         │  │   │
-│  │ AI Agent    │◄───│  │  - In-Context Defenses         │  │   │
-│  │ Container   │    │  │  - Codified Policies           │  │   │
-│  └─────────────┘    │  └────────────────────────────────┘  │   │
-│                      │  ┌────────────────────────────────┐  │   │
-│                      │  │  Protocol Handlers             │  │   │
-│                      │  │  - MCP (HTTP, SSE, WebSocket)  │  │   │
-│                      │  │  - A2A (JSONRPC, gRPC)         │  │   │
-│                      │  └────────────────────────────────┘  │   │
-│                      │  ┌────────────────────────────────┐  │   │
-│                      │  │  Governance                    │  │   │
-│                      │  │  - Prompt Injection Detection  │  │   │
-│                      │  │  - PII Redaction               │  │   │
-│                      │  │  - Token Counting              │  │   │
-│                      │  │  - Rate Limiting               │  │   │
-│                      │  └────────────────────────────────┘  │   │
-│                      └──────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
+![Architecture diagram](./assets/image.pngimage.png)
 
 ## Protocol Support
 
