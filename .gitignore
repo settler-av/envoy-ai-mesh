@@ -37,3 +37,5 @@ temp/
 
 # Kind cluster kubeconfig
 kubeconfig
+
+logs/
